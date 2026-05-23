@@ -2,11 +2,6 @@
 
 **DST-Planner: Diffusion-Augmented Sequential Topological Planning for Robotic Exploration in Complex Environments**
 
-This repository will host the official implementation of **DST-Planner**.
-The code, training scripts, configuration files, and deployment instructions are currently being organized and will be released here.
-
-## Pipeline
-
 ![DST-Planner pipeline](assets/pipeline.png)
 
 ## Release Status
@@ -14,9 +9,6 @@ The code, training scripts, configuration files, and deployment instructions are
 - [x] Project page initialized
 - [x] Method pipeline released
 - [ ] Source code cleanup
-- [ ] Training and evaluation scripts
-- [ ] Configuration files and model checkpoints
-- [ ] Documentation for reproduction
 
 ## Citation
 
