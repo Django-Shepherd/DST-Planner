@@ -30,7 +30,3 @@ If you find this work useful, please consider citing:
   year    = {2026}
 }
 ```
-
-## Contact
-
-For questions, please contact Hui Cheng at `chengh9@mail.sysu.edu.cn`.
