@@ -2,6 +2,8 @@
 
 **DST-Planner: Diffusion-Augmented Sequential Topological Planning for Robotic Exploration in Complex Environments**
 
+Code is being organized around the clock and will be released soon.
+
 ![DST-Planner pipeline](assets/pipeline.png)
 
 ## Release Status
