@@ -72,15 +72,62 @@ Online inference loads only the shared encoder and Actor. Twin Q networks and co
 
 The runner defaults `__GL_SYNC_TO_VBLANK=0` for its simulation subprocesses unless explicitly inherited. This avoids swap-synchronization throttling on the tested host; it does not configure a display server. A working NVIDIA/OpenGL display is still required.
 
-## Build
+## Build and dependencies
 
-After applying the patch and copying the directories, build the complete Catkin workspace as described in the README. `epic_planner --no-deps` is suitable only for rebuilding an existing workspace whose dependencies have already been built.
+After applying the patch and copying the directories, run the following commands
+in Bash from `EPIC_WS`. This setup assumes Ubuntu 20.04 x86_64 with ROS Noetic,
+Conda and an NVIDIA driver already installed. ROS uses `/usr/bin/python3`;
+learning and map generation use a separate Conda environment.
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential cmake git \
+  python3-catkin-tools python3-rosdep python3-numpy mesa-utils \
+  libeigen3-dev libopencv-dev libpcl-dev libboost-all-dev \
+  libglew-dev libglfw3-dev libgl1-mesa-dev libarmadillo-dev qtbase5-dev
+
+# Run sudo rosdep init first if rosdep has never been initialized.
+rosdep update
+source /opt/ros/noetic/setup.bash
+rosdep install --from-paths src --ignore-src -r -y --rosdistro noetic
+
+conda create -n dst-planner python=3.10.18 pip -y
+LEARNING_PY="$(conda run -n dst-planner python -c 'import sys; print(sys.executable)')"
+"$LEARNING_PY" -m pip install "numpy==1.26.4"
+"$LEARNING_PY" -m pip install "torch==2.1.0" \
+  --index-url https://download.pytorch.org/whl/cu121
+"$LEARNING_PY" -m pip install -e learning
+"$LEARNING_PY" -m pip install open3d scipy Pillow PyYAML
+
+catkin build -j4 -p2 --cmake-args \
+  -DCMAKE_BUILD_TYPE=Release -DPYTHON_EXECUTABLE=/usr/bin/python3
+source devel/setup.bash
+glxinfo -B
+```
+
+If rosdep reports only the unused legacy keys `svo_msgs` and `vikit_ros`,
+rerun its install command with `--skip-keys "svo_msgs vikit_ros"`.
+Build the complete Catkin workspace initially; `epic_planner --no-deps` is
+suitable only for rebuilding an existing workspace whose dependencies have
+already been built.
 
 Upstream CMake files require Eigen, PCL, OpenCV, Boost, Armadillo, Qt, GLEW,
 GLFW and OpenGL. This EPIC revision links GLFW through
 `/usr/lib/x86_64-linux-gnu/libglfw.so`, so the documented setup targets x86_64
 Linux. Rendering requires an NVIDIA driver and a working OpenGL display;
 the learning environment installs the PyTorch CUDA runtime separately.
+
+After reopening a terminal, restore the workspace and interpreter settings
+before running collection, training or evaluation. Replace the path below with
+your EPIC checkout:
+
+```bash
+cd /path/to/EPIC-dst
+EPIC_WS="$(pwd -P)"
+source /opt/ros/noetic/setup.bash
+source "$EPIC_WS/devel/setup.bash"
+LEARNING_PY="$(conda run -n dst-planner python -c 'import sys; print(sys.executable)')"
+```
 
 EPIC's original README, author credits and citations remain in the checkout. The DST guide is copied as `README_DST.md`. Example experiment results are available in [EXPERIMENTS.md](EXPERIMENTS.md).
 
