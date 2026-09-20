@@ -76,6 +76,47 @@ Creating an empty `STOP` file in the batch output directory prevents queued
 episodes from starting and lets active episodes finish. Ctrl-C or SIGTERM asks
 active runners to stop and clean up their processes.
 
+## Retry failed scenes
+
+For the generated-scene workflow in the main README, inspect `manifest.json`,
+the episode logs and dataset `admission.json` before retrying. Collection exits
+with a nonzero status if any episode fails. Its `completion.json` means that
+the attempts ended; the dataset converter decides which episodes are admitted.
+Forty attempts do not guarantee forty accepted episodes or twenty accepted maps.
+`--min-maps 20` checks accepted unique maps; add `--min-episodes 40` if needed.
+
+Select failed scenes from the original scene list to preserve their maps and
+start parameters. Run these commands from the assembled EPIC workspace, using
+the `LEARNING_PY` interpreter configured in the main guide:
+
+```bash
+# Replace these names with the scenes that require another collection attempt.
+/usr/bin/python3 - <<'PY'
+import json
+from pathlib import Path
+wanted = {'forest_00_start0', 'partition_00_start1'}
+scenes = json.loads(Path('data/learning-scenes/scenes.json').read_text())
+chosen = [scene for scene in scenes if scene['name'] in wanted]
+assert {scene['name'] for scene in chosen} == wanted, 'Scene name not found'
+with Path('data/learning-scenes/retry-scenes.json').open('x') as output:
+    json.dump(chosen, output, indent=2)
+PY
+
+/usr/bin/python3 scripts/collect.py \
+  --scenes data/learning-scenes/retry-scenes.json \
+  --output runs/learning-expert-retry --workers 1 --duration 1200
+
+PYTHONPATH=learning "$LEARNING_PY" -m dst_planner.data \
+  --roots runs/learning-expert runs/learning-expert-retry \
+  --output data/dst-dataset-v2 --min-maps 20
+```
+
+Keep each attempt and conversion in a new output directory. If a retry fails,
+check its `launch.log`, `summary.json` and admission reason for planning,
+coverage, start-position or runtime problems. A failed conversion also retains
+its admission report. Train with the final successfully produced dataset path,
+such as `data/dst-dataset-v2/dataset.pt`.
+
 ## Files and semantics
 
 - `metadata.json`: schema version, upstream commit, tracked diff, SHA-256 of

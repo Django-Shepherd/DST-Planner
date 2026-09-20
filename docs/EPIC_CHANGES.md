@@ -76,4 +76,24 @@ The runner defaults `__GL_SYNC_TO_VBLANK=0` for its simulation subprocesses unle
 
 After applying the patch and copying the directories, build the complete Catkin workspace as described in the README. `epic_planner --no-deps` is suitable only for rebuilding an existing workspace whose dependencies have already been built.
 
+Upstream CMake files require Eigen, PCL, OpenCV, Boost, Armadillo, Qt, GLEW,
+GLFW and OpenGL. This EPIC revision links GLFW through
+`/usr/lib/x86_64-linux-gnu/libglfw.so`, so the documented setup targets x86_64
+Linux. Rendering requires an NVIDIA driver and a working OpenGL display;
+the learning environment installs the PyTorch CUDA runtime separately.
+
 EPIC's original README, author credits and citations remain in the checkout. The DST guide is copied as `README_DST.md`. Example experiment results are available in [EXPERIMENTS.md](EXPERIMENTS.md).
+
+## Troubleshooting
+
+| Symptom | What to check |
+|---|---|
+| Patch application fails | Confirm the pinned EPIC commit, a clean checkout and `--unidiff-zero`. Apply the patch only once. |
+| `rospy` or generated ROS messages cannot be imported | Use `/usr/bin/python3` and source ROS Noetic and the workspace's `devel/setup.bash`. |
+| `dst_planner`, Torch or Open3D cannot be imported | Use `LEARNING_PY` and install the learning and map dependencies in that interpreter. |
+| `no odom` or simulation startup timeout | Check `glxinfo -B`, `DISPLAY` and the episode's `launch.log`. |
+| Output directory/file already exists | Choose a new run directory or export filename. Use `--resume` only for an existing training run. |
+| Not enough admitted maps or episodes | Read `admission.json`, address the cause and [retry the affected scenes](COLLECTION.md#retry-failed-scenes). |
+| Training runs out of GPU memory | Reduce `--micro-batch` while keeping global batch divisible by micro-batch times GPU count. |
+| Actor socket is already in use | Stop its owning service or choose another socket path for both service and runner. |
+| Strict evaluation fails or times out | Read the scene summary and policy/runner logs. Evaluate the selected checkpoint and retain its failure result. |

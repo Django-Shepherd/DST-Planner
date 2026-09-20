@@ -38,7 +38,7 @@ The runner sets `__GL_SYNC_TO_VBLANK=0` for its simulation children unless an ex
 
 ## Training parameters
 
-The main README provides the complete commands. Run data conversion and learning commands from the assembled EPIC workspace with the learning interpreter; use the system Python for ROS orchestration.
+The main README provides the single-GPU workflow. Run the additional commands below from the assembled EPIC workspace with its configured `LEARNING_PY` interpreter; use the system Python for ROS orchestration.
 
 | Parameter | Default or example value | Where to set it |
 |---|---|---|
@@ -58,12 +58,88 @@ The main README provides the complete commands. Run data conversion and learning
 
 Architecture or loss changes must be made in the corresponding Python configuration or training code. Preserve configuration, data and GPU count when resuming an existing run.
 
+### Two-GPU training
+
+```bash
+PYTHONPATH=learning "$LEARNING_PY" -m torch.distributed.run \
+  --standalone --nproc_per_node=2 -m dst_planner.train \
+  --dataset data/dst-dataset/dataset.pt \
+  --output runs/dst-training-2gpu \
+  --steps 10000 --batch-size 256 --micro-batch 128 --seed 20260917
+```
+
+`--batch-size` is global and must be divisible by `micro-batch * GPU count`.
+Reduce the micro-batch if memory is insufficient while preserving divisibility.
+Multi-GPU training uses NCCL; CPU inference is independent of the training GPU
+count. Use `runs/dst-training-2gpu` consistently when exporting or evaluating
+this run.
+
+### Resume training
+
+Repeat the original launch with `--resume PATH/last.pt`, retaining the output
+directory, dataset, total steps, architecture, batch settings and GPU count.
+For the single-GPU example in the main guide:
+
+```bash
+PYTHONPATH=learning "$LEARNING_PY" -m dst_planner.train \
+  --dataset data/dst-dataset/dataset.pt \
+  --output runs/dst-training \
+  --steps 10000 --batch-size 256 --micro-batch 32 --device cuda:0 \
+  --resume runs/dst-training/last.pt
+```
+
+The checkpoint is saved at validation intervals, every 250 steps by default.
+To pause at an absolute step while preserving the original learning-rate
+schedule, start the run with `--stop-after N`; omit that flag when resuming.
+For distributed training, repeat the original distributed command and add its
+checkpoint path.
+
 ## Checkpoints and deployment
 
 `best.pt` is selected by validation sequence cross-entropy. `last.pt` contains the latest saved training state. Both include optimizer, scheduler, target-network and random-state data for resume. `completion.json` marks the end of the requested training schedule.
 
 `predict export` extracts the encoder and Actor from a checkpoint. `predict serve` loads this export and responds over a local Unix socket. The C++ client checks request identity, graph version, candidate indices, duplicate selections, horizon length and reachability. Online and offline paths share `features.py`.
 
-The policy modes are described in [EPIC_CHANGES.md](EPIC_CHANGES.md). The main README covers automated multi-scene evaluation and a persistent service with a single-scene runner. `evaluate_policy.py` launches one Actor service per scene and shuts down the services and simulations afterward.
+The policy modes are described in [EPIC_CHANGES.md](EPIC_CHANGES.md). The main README covers automated multi-scene evaluation. `evaluate_policy.py` launches one Actor service per scene and shuts down the services and simulations afterward.
 
 Report natural completion, distance, time, coverage and inference latency separately. Coverage is observed reachable floor area; information gain is an approximation from observed LiDAR. The example results and checkpoint-selection behavior are documented in [EXPERIMENTS.md](EXPERIMENTS.md).
+
+### Persistent service and a single-scene run
+
+For custom integration, start a persistent service using the exported Actor:
+
+```bash
+PYTHONPATH=learning "$LEARNING_PY" -m dst_planner.predict serve \
+  --actor runs/dst-training/actor.pt \
+  --socket /tmp/dst-policy.sock --device cpu --threads 2
+```
+
+Leave the service running. In another terminal on the same host, run the
+generated forest scene. Replace the workspace path with your installation
+directory and inherit a working GPU display:
+
+```bash
+cd /absolute/path/to/EPIC-dst
+source /opt/ros/noetic/setup.bash
+source devel/setup.bash
+SCENE=data/generated-scenes/forest
+read -r INIT_X INIT_Y INIT_Z < <(
+  /usr/bin/python3 -c 'import json,sys; print(*json.load(open(sys.argv[1]))["initial_position"])' "$SCENE/scene.json"
+)
+
+/usr/bin/python3 scripts/run_episode.py \
+  --map "$SCENE/forest.pcd" --config "$SCENE/epic.yaml" \
+  --coverage-grid "$SCENE/coverage_grid.npz" \
+  --init "$INIT_X" "$INIT_Y" "$INIT_Z" --init-yaw 0 \
+  --learning-features --policy-mode strict --policy-socket /tmp/dst-policy.sock \
+  --output runs/dst-forest --startup-timeout 90 --duration 300
+```
+
+The runner starts the ROS master and simulation, triggers exploration and
+records the episode. Stop the separately started Actor service with Ctrl-C
+when finished. Both terminals must be able to access the socket. This example
+uses the generated forest preset's default yaw of zero; custom scene lists may
+specify a different `initial_yaw`.
+
+For an EPIC expert baseline on the same scene, change `--policy-mode strict`
+to `--policy-mode epic`, omit `--policy-socket`, and choose a new output directory.
