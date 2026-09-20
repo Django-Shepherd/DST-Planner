@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dst-planner"
+version = "0.1.0"
+description = "Diffusion-augmented sequential viewpoint planning over EPIC"
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.23,<2", "torch>=2.1", "PyYAML>=6"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["dst_planner*"]

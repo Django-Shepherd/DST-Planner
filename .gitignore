@@ -1,15 +1,18 @@
-# OS/editor noise
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.pyc
 .DS_Store
+._*
+/data/
+/runs/
+*.pt
 Thumbs.db
 .vscode/
 .idea/
-
-# Python artifacts for future code release
-__pycache__/
 *.py[cod]
 .pytest_cache/
-
-# LaTeX/build artifacts
 *.aux
 *.bbl
 *.blg

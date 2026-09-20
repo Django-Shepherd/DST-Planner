@@ -1,0 +1,79 @@
+# EPIC Integration Changes
+
+This package adds map generation, DST learning and online policy inference to a fixed EPIC revision. Clone EPIC, check out the pinned commit, apply the adapter patch and copy the additional directories as described in the main guide.
+
+## Base revision and patch application
+
+- Repository: `https://github.com/Robotics-STAR-Lab/EPIC.git`
+- Branch: `main`
+- Pinned commit: `d73c3150e57d669ac21bcad5c859f52c2827c9ba`
+- Patch: `patches/epic-adapter.patch`; modified and added files are listed below.
+
+The commit, rather than the moving branch head, defines compatibility. The patch uses zero context. Use `git apply --unidiff-zero --check` before `git apply --unidiff-zero`. Apply it once to a clean checkout of the pinned revision.
+
+The adapter modifies **nine upstream files** and adds **six source/launch files plus `.gitignore`**. Map generation and learning are separate source directories. PyTorch is not a dependency of the ROS C++ build.
+
+## Modified upstream files
+
+Paths are relative to the EPIC workspace. Patch hunks specify exact changes against the pinned revision.
+
+| File | Change | Purpose and scope |
+|---|---|---|
+| `src/global_planner/exploration_manager/CMakeLists.txt` | Add `decision_recorder.cpp` and `policy_client.cpp` to `epic_planner` | Build recording and inference transport |
+| `src/global_planner/exploration_manager/include/epic_planner/fast_exploration_manager.h` | Declare the recorder, decision/goal IDs, observed voxels, policy settings and execution-event interface | Own integration state; the default policy remains `epic` |
+| `src/global_planner/exploration_manager/src/fast_exploration_manager.cpp` | Initialize parameters; copy graph snapshots before temporary candidates are removed; cover empty/single/multiple candidates; capture reachability before TSP heuristics; request Actor routes; associate applied goals with decisions | EPIC provides expert labels; strict Actor inference selects up to five viewpoints while EPIC connects and executes them |
+| Same manager source: correctness fixes | Convert LKH indices with `-1`; treat every path-search result other than `REACH_END` as unreachable | Fix indexing and reachability; these changes also apply with collection disabled |
+| `src/global_planner/exploration_manager/include/epic_planner/fast_exploration_fsm.h` | Disconnect the point-cloud/odometry synchronizer before subscriber destruction | Correct shutdown lifetime handling |
+| `src/global_planner/exploration_manager/src/fast_exploration_fsm.cpp` | Record applied trajectories, planning failures and recovery; replan after completing a short Actor horizon; use cloud/odometry/synchronization queue capacities 5/500/500 | Align transitions with actual execution; avoid treating a short route as task completion; retain synchronized pose processing |
+| `src/global_planner/exploration_manager/src/fsm_utils.cpp` | Update observed voxels in the synchronized cloud callback and record trajectory stops | Maintain common online/offline gain features and execution boundaries |
+| `src/local_planner/minco_planner/src/planner_manager.cpp` | Initialize from current yaw when no previous yaw trajectory exists | Avoid empty-trajectory access during initialization/recovery |
+| `src/local_planner/path_searching/src/bubble_astar.cpp` | Release only the owning node and bubble pools | Avoid freeing uninitialized or aliased pointers |
+| `src/MARSIM/local_sensing/src/opengl_render_node.cpp` | Scope ROS timers to `main` | Destroy timers before ROS static managers |
+
+The manager source occupies two table rows but counts as one file. Correctness fixes and queue changes also affect runs with recording disabled; the patched baseline is not claimed to be bitwise identical to the original commit. EPIC still provides frontier extraction, topology, local trajectories and its original launch/configuration files.
+
+## Files added by the patch
+
+The following six files share the prefix `src/global_planner/exploration_manager/`:
+
+| Files | Role |
+|---|---|
+| `include/epic_planner/decision_recorder.h`, `src/decision_recorder.cpp` | Pointer-free graph snapshots, bounded background writing and completion/error status |
+| `include/epic_planner/observed_volume.h` | Approximate candidate information gain from observed LiDAR rays, without using the full simulator map as model input |
+| `include/epic_planner/policy_client.h`, `src/policy_client.cpp` | Unix-socket transport, default 1500 ms timeout, request/graph-version matching and route validity checks |
+| `launch/collect.launch` | Parameterized map, configuration, start, yaw, recording and policy options for automated operation without RViz |
+
+The root `.gitignore` excludes Catkin outputs, run records and large generated/downloaded data.
+
+## Additional source directories
+
+| Directory | Entry points and purpose |
+|---|---|
+| `maps/` | `generate.py test` creates forest, partition and dungeon test scenes; `generate.py train` creates training maps and starts; `generate.py custom` exposes custom map parameters; optional analysis tools live in `maps/tools/` |
+| `scripts/` | Expert collection, episode validation, coverage auditing, closed-loop evaluation and plotting |
+| `learning/dst_planner/` | One strict dataset preparation entry point (`python -m dst_planner.data`), shared features, execution-aligned data, graph encoder/Actor/twin-Q/value-diffusion modules, training, export and serving |
+| `tests/` | Model masks, permutation behavior, gradients, export, resume, actual C++ transport/recording, map generation and data validation |
+| `docs/` | Integration changes, data/model contracts, collection format and validation evidence |
+
+## Runtime modes and method contract
+
+| `policy_mode` | Route selection | Use |
+|---|---|---|
+| `epic` | EPIC/LKH | Expert collection without a model; default |
+| `shadow` | EPIC/LKH while also querying the Actor | Input/transport diagnostics |
+| `strict` | DST Actor, with explicit failure on errors | Formal method evaluation |
+| `fallback_epic` | DST Actor, with explicitly recorded EPIC fallback on errors | Debugging that permits fallback |
+
+A single candidate is selected deterministically without a network request. Empty candidate sets, short sequences and true completion are distinct events. Actions contain at most five **candidate exploration viewpoints**, not five adjacent skeleton nodes. EPIC connects viewpoints with feasible paths.
+
+Rewards are `-actual flown metres + 100 * true_finish`: no distance scaling, exactly one true-finish bonus, and none on timeout. Transitions use actual trajectory activation boundaries. Recovery-control intervals are excluded from TD supervision.
+
+Online inference loads only the shared encoder and Actor. Twin Q networks and conditional value diffusion are training components. See [DST_LEARNING.md](DST_LEARNING.md) for detailed contracts.
+
+The runner defaults `__GL_SYNC_TO_VBLANK=0` for its simulation subprocesses unless explicitly inherited. This avoids swap-synchronization throttling on the tested host; it does not configure a display server. A working NVIDIA/OpenGL display is still required.
+
+## Build
+
+After applying the patch and copying the directories, build the complete Catkin workspace as described in the README. `epic_planner --no-deps` is suitable only for rebuilding an existing workspace whose dependencies have already been built.
+
+EPIC's original README, author credits and citations remain in the checkout. The DST guide is copied as `README_DST.md`. Example experiment results are available in [EXPERIMENTS.md](EXPERIMENTS.md).

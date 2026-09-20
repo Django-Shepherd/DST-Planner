@@ -1,0 +1,714 @@
+diff --git a/src/MARSIM/local_sensing/src/opengl_render_node.cpp b/src/MARSIM/local_sensing/src/opengl_render_node.cpp
+index 0b1bbc0..d599a59 100644
+--- a/src/MARSIM/local_sensing/src/opengl_render_node.cpp
++++ b/src/MARSIM/local_sensing/src/opengl_render_node.cpp
+@@ -42 +41,0 @@ ros::Subscriber global_map_sub, local_map_sub;
+-ros::Timer local_sensing_timer, pose_timer, dynobj_timer;
+@@ -697,0 +697,2 @@ int main(int argc, char **argv) {
++  // Destroy timers before ROS static timer managers during process shutdown.
++  ros::Timer local_sensing_timer, pose_timer, dynobj_timer;
+diff --git a/src/global_planner/exploration_manager/CMakeLists.txt b/src/global_planner/exploration_manager/CMakeLists.txt
+index f3a8e01..aa79c78 100755
+--- a/src/global_planner/exploration_manager/CMakeLists.txt
++++ b/src/global_planner/exploration_manager/CMakeLists.txt
+@@ -71,0 +72,2 @@ add_library(epic_planner
++  src/decision_recorder.cpp
++  src/policy_client.cpp
+diff --git a/src/global_planner/exploration_manager/include/epic_planner/fast_exploration_fsm.h b/src/global_planner/exploration_manager/include/epic_planner/fast_exploration_fsm.h
+index 9ce9ea7..fc45a54 100644
+--- a/src/global_planner/exploration_manager/include/epic_planner/fast_exploration_fsm.h
++++ b/src/global_planner/exploration_manager/include/epic_planner/fast_exploration_fsm.h
+@@ -96 +96,2 @@ public:
+-  ~FastExplorationFSM() {}
++  // The synchronizer must disconnect while its input subscribers still exist.
++  ~FastExplorationFSM() { sync_cloud_odom_.reset(); }
+diff --git a/src/global_planner/exploration_manager/include/epic_planner/fast_exploration_manager.h b/src/global_planner/exploration_manager/include/epic_planner/fast_exploration_manager.h
+index d002d0e..11c5ff4 100644
+--- a/src/global_planner/exploration_manager/include/epic_planner/fast_exploration_manager.h
++++ b/src/global_planner/exploration_manager/include/epic_planner/fast_exploration_manager.h
+@@ -13,0 +14,2 @@
++#include <epic_planner/observed_volume.h>
++#include <std_msgs/String.h>
+@@ -27,0 +30 @@ namespace fast_planner {
++class DecisionRecorder;
+@@ -45,0 +49,16 @@ public:
++  size_t decision_id_ = 0;
++  long tour_decision_id_ = -1, goal_decision_id_ = -1;
++  bool learning_features_ = false;
++  ObservedVolume observed_volume_;
++  std::string policy_mode_ = "epic", policy_socket_;
++  int policy_timeout_ms_ = 1500;
++  ros::Publisher policy_error_pub_;
++  ros::Publisher execution_pub_;
++  void executionEvent(const char* kind, int trajectory_id=-1, double start=0.);
++  void recordDecision(const TopoGraph::Ptr& graph, const Eigen::Vector3d& position,
++              const Eigen::Vector3d& velocity, double yaw,
++              const std::vector<TopoNode::Ptr>& candidates, const std::vector<double>& costs,
++              const Eigen::Vector3f& anchor, bool previous, const Eigen::MatrixXd& matrix,
++              const std::vector<int>& route, const char* result,
++              const Eigen::MatrixXi& reachable=Eigen::MatrixXi());
++  std::shared_ptr<DecisionRecorder> decision_recorder_;
+diff --git a/src/global_planner/exploration_manager/src/fast_exploration_fsm.cpp b/src/global_planner/exploration_manager/src/fast_exploration_fsm.cpp
+index d3c1326..a16827c 100644
+--- a/src/global_planner/exploration_manager/src/fast_exploration_fsm.cpp
++++ b/src/global_planner/exploration_manager/src/fast_exploration_fsm.cpp
+@@ -63,0 +64,5 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
++        if (expl_manager_->policy_mode_ == "strict" || expl_manager_->policy_mode_ == "fallback_epic") {
++          // A short actor horizon is not evidence of exploration completion.
++          updateTopoAndGlobalPath();
++          return;
++        }
+@@ -77,0 +83,2 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
++      expl_manager_->executionEvent("trajectory_applied", fd_->newest_traj_.traj_id,
++                                    fd_->newest_traj_.start_time.toSec());
+@@ -93,0 +101 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
++      expl_manager_->executionEvent("planning_failed");
+@@ -97,0 +106 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
++      expl_manager_->executionEvent("planning_start_failed");
+@@ -131,0 +141 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent &e) {
++      expl_manager_->executionEvent("recovery_applied", fd_->newest_traj_.traj_id, fd_->newest_traj_.start_time.toSec());
+@@ -222 +232 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
+-      nh, cloud_topic, 1));
++      nh, cloud_topic, 5));
+@@ -224 +234 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
+-      new message_filters::Subscriber<nav_msgs::Odometry>(nh, odom_topic, 5));
++      new message_filters::Subscriber<nav_msgs::Odometry>(nh, odom_topic, 500));
+@@ -226 +236 @@ void FastExplorationFSM::init(ros::NodeHandle &nh,
+-      SyncPolicyCloudOdom(10), *cloud_sub_, *odom_sub_));
++      SyncPolicyCloudOdom(500), *cloud_sub_, *odom_sub_));
+diff --git a/src/global_planner/exploration_manager/src/fast_exploration_manager.cpp b/src/global_planner/exploration_manager/src/fast_exploration_manager.cpp
+index b2c48a9..2743ad1 100644
+--- a/src/global_planner/exploration_manager/src/fast_exploration_manager.cpp
++++ b/src/global_planner/exploration_manager/src/fast_exploration_manager.cpp
+@@ -11,0 +12,2 @@
++#include <epic_planner/decision_recorder.h>
++#include <epic_planner/policy_client.h>
+@@ -13,0 +16,2 @@
++#include <iomanip>
++#include <sstream>
+@@ -62,0 +67,12 @@ void FastExplorationManager::initialize(
++  bool collect = false;
++  nh.param("collection/enabled", collect, false);
++  nh.param("collection/learning_features", learning_features_, false);
++  nh.param<std::string>("policy/mode",policy_mode_,"epic");
++  nh.param<std::string>("policy/socket",policy_socket_,"");
++  nh.param("policy/timeout_ms",policy_timeout_ms_,1500);
++  if(policy_mode_!="epic" && policy_mode_!="strict" && policy_mode_!="shadow" && policy_mode_!="fallback_epic")
++    throw std::runtime_error("Unknown policy mode");
++  if(policy_mode_!="epic") learning_features_=true;
++  policy_error_pub_=nh.advertise<std_msgs::String>("/dst_collection/error",10,true);
++  execution_pub_ = nh.advertise<std_msgs::String>("/dst_collection/execution", 1000);
++  if (collect) decision_recorder_ = std::make_shared<DecisionRecorder>(nh);
+@@ -65,0 +82,29 @@ void FastExplorationManager::initialize(
++
++void FastExplorationManager::recordDecision(const TopoGraph::Ptr& graph,
++    const Eigen::Vector3d& position,const Eigen::Vector3d& velocity,double yaw,
++    const std::vector<TopoNode::Ptr>& candidates,const std::vector<double>& costs,
++    const Eigen::Vector3f& anchor,bool previous,const Eigen::MatrixXd& matrix,
++    const std::vector<int>& route,const char* result,const Eigen::MatrixXi& reachable) {
++  if(!decision_recorder_) return;
++  std::vector<double> gains;
++  Eigen::MatrixXi connections=reachable;
++  if(learning_features_) {
++    for(const auto& candidate:candidates)
++      gains.push_back(observed_volume_.gain(candidate->center_,planner_manager_->lidar_map_interface_));
++    if(candidates.size()==1) { connections=Eigen::MatrixXi::Zero(2,2); connections(0,1)=connections(1,0)=1; }
++  }
++  decision_recorder_->append(DecisionRecorder::snapshot(graph,position,velocity,yaw,
++    candidates,costs,anchor,previous,matrix,route,result,decision_id_-1,gains,connections));
++}
++
++void FastExplorationManager::executionEvent(const char* kind,int trajectory_id,double start) {
++  if(!decision_recorder_ && !learning_features_) return;
++  std::ostringstream s; s << std::setprecision(17);
++  s << "{\"kind\":\"" << kind << "\",\"decision_id\":" << goal_decision_id_
++    << ",\"stamp\":" << ros::Time::now().toSec() << ",\"traj_id\":" << trajectory_id
++    << ",\"start_time\":" << start << ",\"goal\":["
++    << ed_->next_goal_node_->center_.x() << ',' << ed_->next_goal_node_->center_.y() << ','
++    << ed_->next_goal_node_->center_.z() << "]}";
++  std_msgs::String msg; msg.data=s.str(); execution_pub_.publish(msg);
++}
++
+@@ -85 +130 @@ double FastExplorationManager::getPathCost(TopoNode::Ptr &n1,
+-    if (res == BubbleAstar::NO_PATH)
++    if (res != BubbleAstar::REACH_END)
+@@ -142,0 +188,2 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
++  const size_t this_decision = decision_id_++;
++  (void)this_decision;
+@@ -165,0 +213,3 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
++    recordDecision(
++        planner_manager_->topo_graph_, pos, vel, planner_manager_->local_data_.curr_yaw_,
++        {}, {}, pos.cast<float>(), false, Eigen::MatrixXd(), {}, "no_candidates");
+@@ -262,0 +313,3 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
++    recordDecision(
++        planner_manager_->topo_graph_, pos, vel, curr_yaw,
++        {}, {}, pos.cast<float>(), false, Eigen::MatrixXd(), {}, "no_reachable_candidates");
+@@ -268,0 +322,5 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
++    recordDecision(
++        planner_manager_->topo_graph_, pos, vel, curr_yaw,
++        viewpoint_reachable, viewpoint_reachable_distance2, pos.cast<float>(), false,
++        Eigen::MatrixXd(), {0, 1}, "single_candidate");
++    tour_decision_id_ = long(decision_id_)-1;
+@@ -296,0 +355,5 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
++  Eigen::MatrixXi path_reachable = Eigen::MatrixXi::Zero(dim,dim);
++  for(int i=1;i<dim;++i) {
++    path_reachable(0,i)=path_reachable(i,0)=viewpoint_reachable_distance2[i-1] < 2e3;
++    for(int j=1;j<dim;++j) if(i!=j) path_reachable(i,j)=mat(i,j)<2e3 && std::isfinite(mat(i,j));
++  }
+@@ -315 +378,22 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
+-  solveLHK(mat, indices);
++  bool policy_route_used=false;
++  if(policy_mode_=="epic" || policy_mode_=="shadow") solveLHK(mat,indices);
++  if(policy_mode_!="epic") {
++    std::vector<double> gains;
++    for(const auto& candidate:viewpoint_reachable)
++      gains.push_back(observed_volume_.gain(candidate->center_,planner_manager_->lidar_map_interface_));
++    auto request=DecisionRecorder::snapshot(planner_manager_->topo_graph_,pos,vel,curr_yaw,
++      viewpoint_reachable,viewpoint_reachable_distance2,pos.cast<float>(),false,
++      Eigen::MatrixXd(),{},"policy_request",decision_id_-1,gains,path_reachable);
++    try {
++      auto predicted=requestPolicy(policy_socket_,request,decision_id_-1,path_reachable,policy_timeout_ms_);
++      if(policy_mode_!="shadow") {indices=predicted;policy_route_used=true;}
++      executionEvent(policy_mode_=="shadow" ? "policy_shadow_success" : "policy_success");
++    } catch(const std::exception& e) {
++      if(policy_mode_=="fallback_epic") {solveLHK(mat,indices);executionEvent("policy_fallback");}
++      else if(policy_mode_=="shadow")executionEvent("policy_shadow_failed");
++      else {
++        std_msgs::String error;error.data=std::string("DST strict policy failed: ")+e.what();policy_error_pub_.publish(error);
++        planner_manager_->topo_graph_->removeNodes(viewpoints);return FAIL;
++      }
++    }
++  }
+@@ -320,0 +405 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
++  tour_decision_id_ = long(decision_id_)-1;
+@@ -331 +416 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
+-    last_frame_value = viewpoint_reachable_distance[indices[1]];
++    last_frame_value = viewpoint_reachable_distance[indices[1] - 1];
+@@ -332,0 +418,5 @@ int FastExplorationManager::planGlobalPath(const Eigen::Vector3d &pos,
++  recordDecision(
++      planner_manager_->topo_graph_, pos, vel, curr_yaw,
++      viewpoint_reachable, viewpoint_reachable_distance2,
++      last_goal_reachable ? ed_->next_goal_node_->center_ : planner_manager_->topo_graph_->odom_node_->center_,
++      last_goal_reachable, mat, indices, policy_route_used ? "policy" : "lkh", path_reachable);
+@@ -410,0 +501 @@ void FastExplorationManager::updateGoalNode() {
++  goal_decision_id_ = tour_decision_id_;
+diff --git a/src/global_planner/exploration_manager/src/fsm_utils.cpp b/src/global_planner/exploration_manager/src/fsm_utils.cpp
+index 801e7cb..545eb1f 100644
+--- a/src/global_planner/exploration_manager/src/fsm_utils.cpp
++++ b/src/global_planner/exploration_manager/src/fsm_utils.cpp
+@@ -115,0 +116,2 @@ void FastExplorationFSM::CloudOdomCallback(const sensor_msgs::PointCloud2ConstPt
++  if (expl_manager_->learning_features_)
++    expl_manager_->observed_volume_.update(planner_manager_->lidar_map_interface_);
+@@ -131 +132,0 @@ void FastExplorationFSM::CloudOdomCallback(const sensor_msgs::PointCloud2ConstPt
+-
+@@ -160,0 +162 @@ void FastExplorationFSM::stopTraj() {
++  expl_manager_->executionEvent("trajectory_stop");
+diff --git a/src/local_planner/minco_planner/src/planner_manager.cpp b/src/local_planner/minco_planner/src/planner_manager.cpp
+index 932aee5..acea853 100644
+--- a/src/local_planner/minco_planner/src/planner_manager.cpp
++++ b/src/local_planner/minco_planner/src/planner_manager.cpp
+@@ -412 +412,2 @@ bool FastPlannerManager::YawTrajOpt(double &start_yaw, double &end_yaw,
+-  if (is_static) {
++  // Recovery trajectories can exist before any yaw trajectory has been generated.
++  if (is_static || local_data_.minco_yaw_traj_.getPieceNum() == 0) {
+diff --git a/src/local_planner/path_searching/src/bubble_astar.cpp b/src/local_planner/path_searching/src/bubble_astar.cpp
+index d8656ee..9aaf6f3 100644
+--- a/src/local_planner/path_searching/src/bubble_astar.cpp
++++ b/src/local_planner/path_searching/src/bubble_astar.cpp
+@@ -19,4 +19,4 @@ BubbleAstar::~BubbleAstar() {
+-  for (int i = 0; i < allocate_num_; i++) {
+-    delete path_node_pool_[i]->safe_bubble;
+-    delete path_node_pool_[i];
+-  }
++  // safe_bubble aliases the pool and is uninitialized on unused grid nodes.
++  // Free each owning pool exactly once, including never-used allocations.
++  for (auto *node : path_node_pool_) delete node;
++  for (auto *bubble : bubble_node_pool_) delete bubble;
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..9aeaa61
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,14 @@
++# Catkin outputs
++/build/
++/devel/
++/logs/
++/.catkin_tools/
++# Generated data and downloaded official maps
++/runs/
++/data/
++/src/MARSIM/map_generator/resource/*.pcd
++/src/MARSIM/local_sensing/data/*
++__pycache__/
++*.pyc
++.DS_Store
++._*
+diff --git a/src/global_planner/exploration_manager/include/epic_planner/decision_recorder.h b/src/global_planner/exploration_manager/include/epic_planner/decision_recorder.h
+new file mode 100644
+index 0000000..2aae418
+--- /dev/null
++++ b/src/global_planner/exploration_manager/include/epic_planner/decision_recorder.h
+@@ -0,0 +1,54 @@
++#pragma once
++
++#include <pointcloud_topo/graph.h>
++#include <ros/ros.h>
++#include <std_msgs/String.h>
++#include <atomic>
++#include <condition_variable>
++#include <deque>
++#include <mutex>
++#include <thread>
++
++namespace fast_planner {
++
++// Passive collector: never mutates graph/candidates or chooses an action.
++// A complete, pointer-free JSON snapshot is copied on the planner thread.
++class DecisionRecorder {
++public:
++  explicit DecisionRecorder(ros::NodeHandle &nh);
++  ~DecisionRecorder();
++  DecisionRecorder(const DecisionRecorder &) = delete;
++  DecisionRecorder &operator=(const DecisionRecorder &) = delete;
++
++  void record(const TopoGraph::Ptr &graph, const Eigen::Vector3d &position,
++              const Eigen::Vector3d &velocity, double yaw,
++              const std::vector<TopoNode::Ptr> &candidates,
++              const std::vector<double> &odom_costs,
++              const Eigen::Vector3f &anchor, bool uses_previous_goal,
++              const Eigen::MatrixXd &cost_matrix,
++              const std::vector<int> &expert_route, const char *result);
++
++  static std::string snapshot(const TopoGraph::Ptr &graph, const Eigen::Vector3d &position,
++              const Eigen::Vector3d &velocity, double yaw,
++              const std::vector<TopoNode::Ptr> &candidates,
++              const std::vector<double> &odom_costs, const Eigen::Vector3f &anchor,
++              bool uses_previous_goal, const Eigen::MatrixXd &cost_matrix,
++              const std::vector<int> &expert_route, const char *result, size_t decision_id,
++              const std::vector<double>& gains = {}, const Eigen::MatrixXi& reachable = Eigen::MatrixXi());
++  void append(std::string data);
++
++private:
++  void fail(const std::string &message);
++  void writeLoop();
++  int fd_ = -1;
++  std::string filename_;
++  ros::Publisher error_pub_;
++  std::thread worker_;
++  std::mutex mutex_;
++  std::condition_variable ready_;
++  std::deque<std::string> pending_;
++  bool closing_ = false;
++  std::atomic<bool> failed_{false};
++  size_t max_pending_ = 64, sequence_ = 0, written_ = 0;
++};
++} // namespace fast_planner
+diff --git a/src/global_planner/exploration_manager/include/epic_planner/observed_volume.h b/src/global_planner/exploration_manager/include/epic_planner/observed_volume.h
+new file mode 100644
+index 0000000..8370770
+--- /dev/null
++++ b/src/global_planner/exploration_manager/include/epic_planner/observed_volume.h
+@@ -0,0 +1,56 @@
++#pragma once
++#include <lidar_map/lidar_map.h>
++#include <unordered_set>
++#include <array>
++#include <cmath>
++
++namespace fast_planner {
++// Observed-data-only, coarse unknown-volume estimate. Never reads the simulator map.
++// 1 m voxels, deterministic subsampling of measured rays, and 12 m candidate rays.
++class ObservedVolume {
++  struct Hash {
++    size_t operator()(const std::array<int,3>& p) const {
++      return size_t(p[0])*73856093u ^ size_t(p[1])*19349663u ^ size_t(p[2])*83492791u;
++    }
++  };
++  using Cell=std::array<int,3>;
++  std::unordered_set<Cell,Hash> seen_, occupied_;
++  Cell key(const Eigen::Vector3f& p) const {
++    return {{int(std::floor(p.x())),int(std::floor(p.y())),int(std::floor(p.z()))}};
++  }
++public:
++  void update(const LIOInterface::Ptr& map) {
++    const auto& cloud=map->ld_->lidar_cloud_;
++    const auto origin=map->ld_->lidar_pose_;
++    // Endpoints are world coordinates in the map interface.
++    for (const auto& p:cloud.points) {
++      Eigen::Vector3f hit(p.x,p.y,p.z);
++      if (hit.allFinite()) occupied_.insert(key(hit));
++    }
++    size_t stride=std::max<size_t>(1,cloud.size()/1024);
++    for (size_t i=0;i<cloud.size();i+=stride) {
++      Eigen::Vector3f hit(cloud[i].x,cloud[i].y,cloud[i].z);
++      if (!hit.allFinite()) continue;
++      Eigen::Vector3f delta=hit-origin; float length=delta.norm();
++      if (length<.01f) continue;
++      delta/=length;
++      for (float r=0;r<std::min(length,18.f);r+=.5f) seen_.insert(key(origin+r*delta));
++    }
++  }
++  double gain(const Eigen::Vector3f& position,const LIOInterface::Ptr& map) const {
++    std::unordered_set<Cell,Hash> unknown;
++    for(int az=0;az<36;++az) for(int el=-3;el<=3;++el) {
++      double yaw=az*2*M_PI/36, pitch=el*M_PI/9;
++      Eigen::Vector3f dir(std::cos(pitch)*std::cos(yaw),std::cos(pitch)*std::sin(yaw),std::sin(pitch));
++      for(float r=.5f;r<=12.f;r+=.5f) {
++        Eigen::Vector3f p=position+r*dir;
++        if(!map->IsInBox(p)) break;
++        Cell cell=key(p);
++        if(occupied_.count(cell)) break;
++        if(!seen_.count(cell)) unknown.insert(cell);
++      }
++    }
++    return double(unknown.size()); // volume in m^3 (each unique cell is 1 m^3)
++  }
++};
++}
+diff --git a/src/global_planner/exploration_manager/include/epic_planner/policy_client.h b/src/global_planner/exploration_manager/include/epic_planner/policy_client.h
+new file mode 100644
+index 0000000..dad2c7e
+--- /dev/null
++++ b/src/global_planner/exploration_manager/include/epic_planner/policy_client.h
+@@ -0,0 +1,9 @@
++#pragma once
++#include <string>
++#include <vector>
++#include <Eigen/Core>
++namespace fast_planner {
++// Unix domain transport keeps PyTorch separate from the ROS Python installation.
++std::vector<int> requestPolicy(const std::string& socket_path,const std::string& json,
++                              size_t decision_id,const Eigen::MatrixXi& reachable,int timeout_ms);
++}
+diff --git a/src/global_planner/exploration_manager/launch/collect.launch b/src/global_planner/exploration_manager/launch/collect.launch
+new file mode 100644
+index 0000000..6154db6
+--- /dev/null
++++ b/src/global_planner/exploration_manager/launch/collect.launch
+@@ -0,0 +1,53 @@
++<launch>
++  <arg name="map"/>
++  <arg name="output"/>
++  <arg name="enabled" default="false"/>
++  <arg name="learning_features" default="false"/>
++  <arg name="policy_mode" default="epic"/>
++  <arg name="policy_socket" default=""/>
++  <arg name="config" default="$(find epic_planner)/config/garage.yaml"/>
++  <arg name="init_x" default="5.0"/>
++  <arg name="init_y" default="0.0"/>
++  <arg name="init_z" default="2.0"/>
++  <arg name="init_yaw" default="0.0"/>
++  <arg name="sensor_range" default="60.0"/>
++  <arg name="sensor_resolution" default="0.2"/>
++  <arg name="use_gpu" default="true"/>
++  <arg name="lidar_pitch" default="40.0"/>
++  <node pkg="epic_planner" name="exploration_node" type="exploration_node" output="screen" required="true">
++    <rosparam file="$(arg config)" command="load"/>
++    <param name="fsm/thresh_replan" value="0.5"/>
++    <param name="fsm/emergency_replan_control_error" value="1.5"/>
++    <param name="fsm/replan_time" value="0.2"/>
++    <param name="fsm/debug_planner" value="false"/>
++    <param name="exploration/tsp_dir" value="$(arg output)/lkh"/>
++    <param name="bubble_topo/cube_discrete_size" value="0.3"/>
++    <param name="bubble_astar/allocate_num" value="1000000"/>
++    <param name="bubble_astar/lambda_heu" value="100.0"/>
++    <param name="bubble_astar/debug" value="false"/>
++    <param name="bubble_astar/resolution_astar" value="0.2"/>
++    <param name="collection/enabled" value="$(arg enabled)"/>
++    <param name="collection/learning_features" value="$(arg learning_features)"/>
++    <param name="policy/mode" value="$(arg policy_mode)"/>
++    <param name="policy/socket" value="$(arg policy_socket)"/>
++    <param name="collection/output_file" value="$(arg output)/decisions.jsonl"/>
++  </node>
++  <node pkg="plan_manage" name="traj_server" type="traj_server" output="log" required="true">
++    <remap from="/position_cmd" to="/planning/pos_cmd"/>
++  </node>
++  <node pkg="map_generator" name="map_pub" type="map_pub" args="$(arg map)" output="log">
++    <param name="add_boundary" value="0"/><param name="is_bridge" value="0"/>
++    <param name="downsample_res" value="0.01"/>
++    <param name="map_offset_x" value="0.0"/><param name="map_offset_y" value="0.0"/><param name="map_offset_z" value="0.0"/>
++  </node>
++  <include file="$(find test_interface)/launch/single_drone_with_fuel.xml">
++    <arg name="drone_id" value="0"/><arg name="uav_num_" value="1"/>
++    <arg name="init_x_" value="$(arg init_x)"/><arg name="init_y_" value="$(arg init_y)"/><arg name="init_z_" value="$(arg init_z)"/>
++    <arg name="init_yaw" value="$(arg init_yaw)"/><arg name="odom_topic" value="lidar_slam/odom"/>
++    <arg name="lidar_type" value="mid360"/><arg name="map_name_" value="$(arg map)"/>
++    <arg name="downsample_resolution_" value="0.1"/><arg name="use_gpu" value="$(arg use_gpu)"/>
++    <arg name="use_uav_extra_model_" value="0"/><arg name="sensing_horizon" value="$(arg sensor_range)"/>
++    <arg name="lidar_pitch_" value="$(arg lidar_pitch)"/>
++  </include>
++  <param name="/quad0_pcl_render_node/polar_resolution" value="$(arg sensor_resolution)"/>
++</launch>
+diff --git a/src/global_planner/exploration_manager/src/decision_recorder.cpp b/src/global_planner/exploration_manager/src/decision_recorder.cpp
+new file mode 100644
+index 0000000..92cf9d8
+--- /dev/null
++++ b/src/global_planner/exploration_manager/src/decision_recorder.cpp
+@@ -0,0 +1,194 @@
++#include <epic_planner/decision_recorder.h>
++#include <algorithm>
++#include <cerrno>
++#include <cmath>
++#include <cstring>
++#include <fcntl.h>
++#include <fstream>
++#include <iomanip>
++#include <locale>
++#include <sstream>
++#include <unordered_map>
++#include <unistd.h>
++
++namespace fast_planner {
++namespace {
++void number(std::ostream &out, double x) {
++  if (std::isfinite(x)) out << x; else out << "null";
++}
++template <typename V> void xyz(std::ostream &out, const V &v) {
++  out << '['; number(out, v.x()); out << ','; number(out, v.y());
++  out << ','; number(out, v.z()); out << ']';
++}
++}
++
++DecisionRecorder::DecisionRecorder(ros::NodeHandle &nh) {
++  error_pub_ = nh.advertise<std_msgs::String>("/dst_collection/error", 1, true);
++  nh.param<std::string>("collection/output_file", filename_, "");
++  int limit = 64;
++  nh.param("collection/max_pending", limit, 64);
++  max_pending_ = static_cast<size_t>(std::max(1, limit));
++  fd_ = ::open(filename_.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
++  if (fd_ < 0) { fail("Cannot create new decision file: " + std::string(std::strerror(errno))); return; }
++  worker_ = std::thread(&DecisionRecorder::writeLoop, this);
++}
++
++void DecisionRecorder::fail(const std::string &message) {
++  failed_ = true;
++  ROS_ERROR_STREAM("DST collection failed: " << message);
++  std_msgs::String msg; msg.data = message; error_pub_.publish(msg);
++}
++
++DecisionRecorder::~DecisionRecorder() {
++  { std::lock_guard<std::mutex> lock(mutex_); closing_ = true; }
++  ready_.notify_all();
++  if (worker_.joinable()) worker_.join();
++  if (fd_ >= 0) {
++    if (::fsync(fd_) != 0) fail("Cannot sync decision file");
++    ::close(fd_);
++    std::ofstream status(filename_ + ".status.json");
++    status << "{\"schema_version\":1,\"enqueued\":" << sequence_
++           << ",\"written\":" << written_ << ",\"failed\":"
++           << (failed_ ? "true" : "false") << "}\n";
++    status.close();
++    if (!status) fail("Cannot write decision completion status");
++  }
++}
++
++void DecisionRecorder::writeLoop() {
++  while (true) {
++    std::string data;
++    {
++      std::unique_lock<std::mutex> lock(mutex_);
++      ready_.wait(lock, [&] { return closing_ || !pending_.empty(); });
++      if (pending_.empty() && closing_) break;
++      data = std::move(pending_.front()); pending_.pop_front();
++    }
++    size_t offset = 0;
++    while (offset < data.size()) {
++      const ssize_t n = ::write(fd_, data.data() + offset, data.size() - offset);
++      if (n < 0 && errno == EINTR) continue;
++      if (n <= 0) { fail("Decision write failed: " + std::string(std::strerror(errno))); return; }
++      offset += static_cast<size_t>(n);
++    }
++    ++written_;
++  }
++}
++
++void DecisionRecorder::record(const TopoGraph::Ptr &graph,
++    const Eigen::Vector3d &position, const Eigen::Vector3d &velocity, double yaw,
++    const std::vector<TopoNode::Ptr> &candidates,
++    const std::vector<double> &odom_costs, const Eigen::Vector3f &anchor,
++    bool uses_previous_goal, const Eigen::MatrixXd &cost_matrix,
++    const std::vector<int> &expert_route, const char *result) {
++  append(snapshot(graph, position, velocity, yaw, candidates, odom_costs, anchor, uses_previous_goal, cost_matrix, expert_route, result, sequence_));
++}
++
++
++std::string DecisionRecorder::snapshot(const TopoGraph::Ptr &graph,
++    const Eigen::Vector3d &position, const Eigen::Vector3d &velocity, double yaw,
++    const std::vector<TopoNode::Ptr> &candidates,
++    const std::vector<double> &odom_costs, const Eigen::Vector3f &anchor,
++    bool uses_previous_goal, const Eigen::MatrixXd &cost_matrix,
++    const std::vector<int> &expert_route, const char *result, size_t decision_id, const std::vector<double>& gains, const Eigen::MatrixXi& reachable) {
++
++  const auto started = ros::WallTime::now();
++  std::vector<TopoNode::Ptr> nodes;
++  std::unordered_map<TopoNode *, size_t> ids;
++  auto add = [&](const TopoNode::Ptr &n) {
++    if (n && ids.emplace(n.get(), nodes.size()).second) nodes.push_back(n);
++  };
++  add(graph->odom_node_);
++  for (const auto &region : graph->regions_arr_)
++    if (region) for (const auto &n : region->topo_nodes_) add(n);
++  for (const auto &region : graph->toponodes_update_region_arr_)
++    if (region) for (const auto &n : region->topo_nodes_) add(n);
++  for (const auto &entry : graph->reg_map_idx2ptr_)
++    if (entry.second) for (const auto &n : entry.second->topo_nodes_) add(n);
++  for (const auto &n : graph->history_odom_nodes_) add(n);
++  for (const auto &n : candidates) add(n);
++  // Include neighbor closure so every exported edge endpoint has an ID.
++  for (size_t i = 0; i < nodes.size(); ++i) {
++    auto n = nodes[i];
++    for (const auto &neighbor : n->neighbors_) add(neighbor);
++  }
++  std::stable_sort(nodes.begin(), nodes.end(), [](const TopoNode::Ptr &a, const TopoNode::Ptr &b) {
++    for (int axis = 0; axis < 3; ++axis)
++      if (a->center_[axis] != b->center_[axis]) return a->center_[axis] < b->center_[axis];
++    return a->is_history_odom_node_ < b->is_history_odom_node_;
++  });
++  ids.clear();
++  for (size_t i = 0; i < nodes.size(); ++i) ids[nodes[i].get()] = i;
++  std::ostringstream out; out.imbue(std::locale::classic()); out << std::setprecision(9);
++  out << "{\"schema_version\":1,\"decision_id\":" << decision_id
++      << ",\"stamp\":" << std::setprecision(17) << ros::Time::now().toSec()
++      << std::setprecision(9) << ",\"frame_id\":\"world\",\"result\":\"" << result
++      << "\",\"position\":"; xyz(out, position);
++  out << ",\"velocity\":"; xyz(out, velocity);
++  out << ",\"yaw\":"; number(out, yaw);
++  out << ",\"planning_anchor\":"; xyz(out, anchor);
++  out << ",\"uses_previous_goal\":" << (uses_previous_goal ? "true" : "false");
++  out << ",\"current_node_id\":" << ids.at(graph->odom_node_.get()) << ",\"nodes\":[";
++  for (size_t i = 0; i < nodes.size(); ++i) {
++    if (i) out << ',';
++    auto n = nodes[i];
++    out << "{\"id\":" << i << ",\"position\":"; xyz(out, n->center_);
++    out << ",\"is_current\":" << (n == graph->odom_node_ ? "true" : "false")
++        << ",\"is_viewpoint\":" << (n->is_viewpoint_ ? "true" : "false")
++        << ",\"is_history\":" << (n->is_history_odom_node_ ? "true" : "false") << '}';
++  }
++  out << "],\"edges\":[";
++  bool first = true;
++  for (size_t i = 0; i < nodes.size(); ++i) {
++    auto n = nodes[i]; std::vector<size_t> neighbors;
++    for (const auto &v : n->neighbors_) if (v) neighbors.push_back(ids.at(v.get()));
++    std::sort(neighbors.begin(), neighbors.end());
++    for (size_t j : neighbors) {
++      if (!first) out << ','; first = false;
++      out << "[" << i << ',' << j << ',';
++      const auto weight = n->weight_.find(nodes[j]);
++      if (weight == n->weight_.end()) out << "null"; else number(out, weight->second);
++      out << ']';
++    }
++  }
++  out << "],\"candidates\":[";
++  for (size_t i = 0; i < candidates.size(); ++i) {
++    if (i) out << ',';
++    out << "{\"id\":" << i << ",\"node_id\":" << ids.at(candidates[i].get()) << ",\"position\":";
++    xyz(out, candidates[i]->center_); out << ",\"yaw\":"; number(out, candidates[i]->yaw_);
++    out << ",\"odom_cost\":";
++    if (i < odom_costs.size()) number(out, odom_costs[i]); else out << "null";
++    out << '}';
++  }
++  out << "],\"matrix_dimension\":" << cost_matrix.rows() << ",\"cost_matrix\":[";
++  for (int i = 0; i < cost_matrix.rows(); ++i)
++    for (int j = 0; j < cost_matrix.cols(); ++j) {
++      if (i || j) out << ','; number(out, cost_matrix(i,j));
++    }
++  out << "],\"expert_route\":[";
++  for (size_t i = 0; i < expert_route.size(); ++i) { if (i) out << ','; out << expert_route[i]; }
++  out << "],\"selected_candidate_id\":";
++  if (expert_route.size() >= 2) out << expert_route[1] - 1; else out << "null";
++  out << ",\"feature_version\":" << (gains.size()==candidates.size() ? 2 : 1)
++      << ",\"graph_version\":" << decision_id
++      << ",\"gain_definition\":\"observed_voxel_raycast_v1\",\"information_gain_m3\":[";
++  for (size_t i=0;i<gains.size();++i) { if(i) out << ','; number(out,gains[i]); }
++  out << "],\"reachability_dimension\":" << reachable.rows() << ",\"reachable\":[";
++  for(int i=0;i<reachable.rows();++i) for(int j=0;j<reachable.cols();++j) {
++    if(i||j) out << ','; out << reachable(i,j);
++  }
++  out << "],\"capture_ms\":" << (ros::WallTime::now() - started).toSec() * 1000. << "}\n";
++  return out.str();
++}
++
++void DecisionRecorder::append(std::string data) {
++  if(failed_) return;
++  if (data.size() > 64 * 1024 * 1024) { fail("Snapshot exceeds 64 MiB"); return; }
++  {
++    std::lock_guard<std::mutex> lock(mutex_);
++    if (pending_.size() >= max_pending_) { fail("Decision queue overflow"); return; }
++    pending_.push_back(std::move(data)); ++sequence_;
++  }
++  ready_.notify_one();
++}
++} // namespace fast_planner
+diff --git a/src/global_planner/exploration_manager/src/policy_client.cpp b/src/global_planner/exploration_manager/src/policy_client.cpp
+new file mode 100644
+index 0000000..114d7c2
+--- /dev/null
++++ b/src/global_planner/exploration_manager/src/policy_client.cpp
+@@ -0,0 +1,66 @@
++#include <epic_planner/policy_client.h>
++#include <boost/property_tree/json_parser.hpp>
++#include <boost/property_tree/ptree.hpp>
++#include <sys/socket.h>
++#include <sys/un.h>
++#include <poll.h>
++#include <unistd.h>
++#include <fcntl.h>
++#include <chrono>
++#include <cstring>
++#include <sstream>
++#include <set>
++#include <stdexcept>
++
++namespace fast_planner {
++std::vector<int> requestPolicy(const std::string& path,const std::string& json,
++                              size_t decision_id,const Eigen::MatrixXi& reachable,int timeout_ms) {
++  struct FD {int value; ~FD(){if(value>=0)::close(value);}} fd{::socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK,0)};
++  if(fd.value<0)throw std::runtime_error("policy socket creation failed");
++  sockaddr_un addr{};addr.sun_family=AF_UNIX;
++  if(path.size()>=sizeof(addr.sun_path))throw std::runtime_error("policy socket path too long");
++  std::strcpy(addr.sun_path,path.c_str());
++  auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(timeout_ms);
++  auto ready=[&](short events){
++    while(true) {
++      auto remaining=std::chrono::duration_cast<std::chrono::milliseconds>(deadline-std::chrono::steady_clock::now()).count();
++      if(remaining<=0)throw std::runtime_error("policy timeout");
++      pollfd p{fd.value,events,0};int result=poll(&p,1,int(remaining));
++      if(result<0 && errno==EINTR)continue;
++      if(result<=0 || !(p.revents&events))throw std::runtime_error("policy unavailable/timeout");
++      return;
++    }
++  };
++  if(::connect(fd.value,reinterpret_cast<sockaddr*>(&addr),sizeof(addr))<0) {
++    if(errno!=EINPROGRESS && errno!=EAGAIN)throw std::runtime_error("policy connect failed");
++    ready(POLLOUT);int error=0;socklen_t len=sizeof(error);getsockopt(fd.value,SOL_SOCKET,SO_ERROR,&error,&len);
++    if(error)throw std::runtime_error("policy connect failed");
++  }
++  size_t sent=0;
++  while(sent<json.size()) {
++    ready(POLLOUT);ssize_t n=::send(fd.value,json.data()+sent,json.size()-sent,MSG_NOSIGNAL);
++    if(n<0 && (errno==EINTR || errno==EAGAIN))continue;
++    if(n<=0)throw std::runtime_error("policy send failed");sent+=size_t(n);
++  }
++  std::string response;
++  while(response.find('\n')==std::string::npos) {
++    ready(POLLIN);char bytes[4096];ssize_t n=::recv(fd.value,bytes,sizeof(bytes),0);
++    if(n<0 && (errno==EINTR || errno==EAGAIN))continue;
++    if(n<=0)throw std::runtime_error("policy response incomplete");response.append(bytes,size_t(n));
++    if(response.size()>65536)throw std::runtime_error("policy response oversized");
++  }
++  boost::property_tree::ptree tree;std::istringstream in(response);boost::property_tree::read_json(in,tree);
++  if(!tree.get<bool>("ok",false))throw std::runtime_error("policy model error");
++  if(tree.get<size_t>("request_id")!=decision_id || tree.get<size_t>("graph_version")!=decision_id)
++    throw std::runtime_error("stale policy response");
++  std::vector<int> route{0};std::set<int> used;
++  for(const auto& item:tree.get_child("route")) {
++    int v=item.second.get_value<int>()+1;
++    if(v<1 || v>=reachable.rows() || !used.insert(v).second || !reachable(route.back(),v))
++      throw std::runtime_error("invalid policy route");
++    route.push_back(v);
++  }
++  if(route.size()<2 || route.size()>6)throw std::runtime_error("invalid policy horizon");
++  return route;
++}
++}
